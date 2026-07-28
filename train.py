@@ -10,20 +10,25 @@ import torch
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import OmegaConf, open_dict
 
-_MIN_SWM_VERSION = "0.1.1"
-
 try:
-    import importlib.metadata as _md
-    _swm_ver = _md.version("stable-worldmodel")
-except Exception:
-    _swm_ver = "unknown"
-_swm_ver_tuple = tuple(int(x) for x in _swm_ver.split(".")[:2]) if _swm_ver != "unknown" else (0, 0)
-if _swm_ver_tuple < (0, 1):
-    raise RuntimeError(
-        f"This repository requires stable-worldmodel>={_MIN_SWM_VERSION}. "
-        f"Found {_swm_ver}. Install with:\n"
-        f'  python -m pip install --upgrade "stable-worldmodel[all]=={_MIN_SWM_VERSION}"'
-    )
+    from importlib.metadata import PackageNotFoundError, version as _md_version
+    from packaging.version import Version
+except ImportError:
+    Version = None
+
+if Version is not None:
+    _MIN_SWM_VER = Version("0.1.1")
+    try:
+        _swm_ver = Version(_md_version("stable-worldmodel"))
+    except PackageNotFoundError:
+        _swm_ver = Version("0")
+    if _swm_ver < _MIN_SWM_VER or not hasattr(swm.data, "load_dataset"):
+        raise RuntimeError(
+            "This repository requires stable-worldmodel==0.1.1 "
+            "with swm.data.load_dataset available.\n"
+            'Install with: python -m pip install --force-reinstall '
+            '"stable-worldmodel[all]==0.1.1"'
+        )
 
 from module import SIGReg
 from shortcut import (
@@ -184,25 +189,26 @@ def run(cfg):
 
     dataset_cfg = OmegaConf.to_container(cfg.data.dataset, resolve=True)
     dataset_name = dataset_cfg.pop("name")
-    cache_dir = os.environ.get("LOCAL_DATASET_DIR", None)
-    if cache_dir is None:
+    local_dataset_dir = os.environ.get("LOCAL_DATASET_DIR")
+    if local_dataset_dir:
+        candidate = Path(local_dataset_dir) / dataset_name
+        if not candidate.exists():
+            candidate = Path(local_dataset_dir) / f"{dataset_name}.h5"
+        if not candidate.exists():
+            candidate = Path(local_dataset_dir) / f"{dataset_name}.lance"
+        if candidate.exists():
+            dataset_name = str(candidate)
+    else:
         cache_dir = swm.data.utils.get_cache_dir()
-    dataset_path = Path(cache_dir) / dataset_name
-    if not dataset_path.exists():
-        dataset_path = Path(cache_dir) / f"{dataset_name}.h5"
-    if not dataset_path.exists():
-        dataset_path = Path(cache_dir) / f"{dataset_name}.lance"
-    if not dataset_path.exists():
-        dataset_path = Path(dataset_name)
-    if not dataset_path.is_absolute():
-        dataset_path = Path.cwd() / dataset_path
-    if not dataset_path.exists():
-        raise FileNotFoundError(
-            f"Dataset {dataset_name!r} not found. "
-            f"Tried {cache_dir}/ with and without .h5/.lance extensions."
-        )
+        candidate = Path(cache_dir) / dataset_name
+        if not candidate.exists():
+            candidate = Path(cache_dir) / f"{dataset_name}.h5"
+        if not candidate.exists():
+            candidate = Path(cache_dir) / f"{dataset_name}.lance"
+        if candidate.exists():
+            dataset_name = str(candidate)
     dataset = swm.data.load_dataset(
-        str(dataset_path), cache_dir=cache_dir, **dataset_cfg
+        dataset_name, **dataset_cfg
     )
     transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
 
@@ -270,6 +276,12 @@ def run(cfg):
     run_id = cfg.get("subdir") or ""
     run_dir = Path(swm.data.utils.get_cache_dir(sub_folder='checkpoints'), run_id)
 
+    metrics_dir = Path(
+        swm.data.utils.get_cache_dir(sub_folder='checkpoints')
+    ) / cfg.output_model_name
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    gpu_metrics_path = metrics_dir / f"{cfg.output_model_name}_gpu_metrics.json"
+
     logger = None
     if cfg.wandb.enabled:
         logger = WandbLogger(**cfg.wandb.config)
@@ -282,7 +294,6 @@ def run(cfg):
     object_dump_callback = SaveCkptCallback(
         run_name=cfg.output_model_name, cfg=cfg.model, epoch_interval=1,
     )
-    gpu_metrics_path = run_dir / f"{cfg.output_model_name}_gpu_metrics.json"
     gpu_metrics_callback = GPUMetricsCallback(output_path=gpu_metrics_path)
 
     trainer = pl.Trainer(

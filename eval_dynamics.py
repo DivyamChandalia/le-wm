@@ -189,7 +189,7 @@ def run(cfg: DictConfig):
     dataset.transform = transform
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = swm.policy.AutoCostModel(cfg.policy)
+    model = swm.wm.utils.load_pretrained(cfg.policy)
     model = model.to(device).eval()
     model.requires_grad_(False)
 
@@ -209,7 +209,7 @@ def run(cfg: DictConfig):
 
     print("Evaluating conditioning shuffle...")
     shuffle_results = evaluate_conditioning_shuffle(
-        model, dataset, horizons=horizons, noise_seed=12345, num_samples=32, device=device,
+        model, dataset, horizons=[1], noise_seed=12345, num_samples=32, device=device,
     )
     print("Conditioning results:", json.dumps(shuffle_results, indent=2, default=str))
 

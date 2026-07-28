@@ -130,11 +130,23 @@ def benchmark():
     for exp in experiments:
         print(f"\n--- Training {exp['name']} ---")
 
+        # Clear stale checkpoint directory to avoid load_pretrained confusion
+        stale_dir = Path(
+            swm.data.utils.get_cache_dir(sub_folder='checkpoints')
+        ) / exp["name"]
+        if stale_dir.exists():
+            import shutil
+            shutil.rmtree(stale_dir)
+
         result, elapsed = run_training(exp["config_name"], common + exp["overrides"], exp["name"])
         training_info = {
             "training_time_s": elapsed,
             "returncode": result.returncode,
         }
+
+        if result.returncode != 0:
+            results[exp["name"]] = training_info
+            continue
 
         gpu_metrics = read_gpu_metrics(exp["name"])
         if gpu_metrics:
