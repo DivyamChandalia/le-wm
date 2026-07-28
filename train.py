@@ -10,6 +10,21 @@ import torch
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import OmegaConf, open_dict
 
+_MIN_SWM_VERSION = "0.1.1"
+
+try:
+    import importlib.metadata as _md
+    _swm_ver = _md.version("stable-worldmodel")
+except Exception:
+    _swm_ver = "unknown"
+_swm_ver_tuple = tuple(int(x) for x in _swm_ver.split(".")[:2]) if _swm_ver != "unknown" else (0, 0)
+if _swm_ver_tuple < (0, 1):
+    raise RuntimeError(
+        f"This repository requires stable-worldmodel>={_MIN_SWM_VERSION}. "
+        f"Found {_swm_ver}. Install with:\n"
+        f'  python -m pip install --upgrade "stable-worldmodel[all]=={_MIN_SWM_VERSION}"'
+    )
+
 from module import SIGReg
 from shortcut import (
     sample_finest_flow_batch,
@@ -170,8 +185,17 @@ def run(cfg):
     dataset_cfg = OmegaConf.to_container(cfg.data.dataset, resolve=True)
     dataset_name = dataset_cfg.pop("name")
     cache_dir = os.environ.get("LOCAL_DATASET_DIR", None)
+    if cache_dir is None:
+        cache_dir = swm.data.utils.get_cache_dir()
+    dataset_path = Path(cache_dir) / dataset_name
+    if not dataset_path.exists():
+        dataset_path = Path(cache_dir) / f"{dataset_name}.h5"
+    if not dataset_path.exists():
+        dataset_path = Path(dataset_name)
+    if not dataset_path.is_absolute():
+        dataset_path = Path.cwd() / dataset_path
     dataset = swm.data.load_dataset(
-        dataset_name, transform=None, cache_dir=cache_dir, **dataset_cfg
+        str(dataset_path), cache_dir=cache_dir, **dataset_cfg
     )
     transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
 

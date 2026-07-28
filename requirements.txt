@@ -1,0 +1,1 @@
+stable-worldmodel[all]==0.1.1
