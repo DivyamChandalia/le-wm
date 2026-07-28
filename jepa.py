@@ -178,6 +178,9 @@ class ShortcutJEPA(JEPA):
         if nfe is not None:
             self.sampling_nfe = nfe
         if num_model_samples is not None:
+            assert num_model_samples == 1, (
+                "Multi-sample planning is not implemented yet."
+            )
             self.num_model_samples = num_model_samples
         if seed is not None:
             self.planning_seed = seed
@@ -245,7 +248,17 @@ class ShortcutJEPA(JEPA):
         act_emb = self.action_encoder(act)
         emb_trunc = emb[:, -HS:]
         act_trunc = act_emb[:, -HS:]
-        pred_emb = emb[:, -1:]  # already predicted; extra prediction not needed for flow
+        context = self.predict_context(emb_trunc, act_trunc)[:, -1:]
+        final_noise = (
+            rollout_noise[:, n_steps:n_steps + 1]
+            if rollout_noise is not None
+            else None
+        )
+        pred_emb = self.sample_next_from_context(
+            context=context,
+            base_state=emb[:, -1:],
+            noise=final_noise,
+        )
         emb = torch.cat([emb, pred_emb], dim=1)
 
         pred_rollout = rearrange(emb, "(b s) ... -> b s ...", b=B, s=S)
@@ -283,10 +296,10 @@ class ShortcutJEPA(JEPA):
         generator = torch.Generator(device=device)
         generator.manual_seed(self.planning_seed)
         noise = torch.randn(
-            B, 1, n_steps, latent_dim,
+            B, 1, n_steps + 1, latent_dim,
             generator=generator, device=device, dtype=goal["emb"].dtype,
         )
-        noise = noise.expand(B, S, n_steps, latent_dim)
+        noise = noise.expand(B, S, n_steps + 1, latent_dim)
         noise = rearrange(noise, "b s t d -> (b s) t d")
 
         info_dict = self.rollout(info_dict, action_candidates, rollout_noise=noise)

@@ -1,6 +1,7 @@
 defaults:
   - launcher: local
   - solver: cem
+  - sampling: deterministic
   - _self_
 
 world:

@@ -93,6 +93,16 @@ def test_shortcut_grid():
     assert grid["valid"].shape == (B, T)
 
 
+def test_shortcut_grid_kmax_16_includes_nfe_8():
+    B, T = 4, 5
+    for k_max in [4, 8, 16]:
+        device = "cpu"
+        grid = sample_shortcut_grid((B, T), k_max, device)
+        unique_nfe = grid["nfe"].unique().tolist()
+        expected_max = max(1, k_max // 2)
+        assert max(unique_nfe) == expected_max, f"k_max={k_max}: expected max NFE {expected_max}, got {unique_nfe}"
+
+
 def test_shortcut_bootstrap_loss_finite():
     B, T, D = 2, 3, 192
     k_max = 8

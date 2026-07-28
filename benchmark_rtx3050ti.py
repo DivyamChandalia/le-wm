@@ -4,6 +4,7 @@ import sys
 import time
 from pathlib import Path
 
+import stable_worldmodel as swm
 import torch
 
 
@@ -36,10 +37,9 @@ def benchmark_inference(model, device="cuda", history=3, latent_dim=192, horizon
     model.requires_grad_(False)
     B = 1
 
-    emb = torch.randn(B, history, latent_dim, device=device)
-    act_emb = torch.randn(B, history, latent_dim, device=device)
-
     for _ in range(warmup):
+        emb = torch.randn(B, history, latent_dim, device=device)
+        act_emb = torch.randn(B, history, latent_dim, device=device)
         if hasattr(model, "sample_next_from_context"):
             context = model.predict_context(emb, act_emb)[:, -1:]
             noise = torch.randn_like(context)
@@ -52,15 +52,19 @@ def benchmark_inference(model, device="cuda", history=3, latent_dim=192, horizon
     five_step_times = []
 
     for _ in range(timed_iters):
+        emb = torch.randn(B, history, latent_dim, device=device)
+        act_emb = torch.randn(B, history, latent_dim, device=device)
         torch.cuda.synchronize()
         t0 = time.perf_counter()
         for step in range(horizon):
+            emb_trunc = emb[:, -history:]
+            act_trunc = act_emb[:, -history:]
             if hasattr(model, "sample_next_from_context"):
-                context = model.predict_context(emb, act_emb)[:, -1:]
+                context = model.predict_context(emb_trunc, act_trunc)[:, -1:]
                 noise = torch.randn_like(context)
                 pred = model.sample_next_from_context(context=context, base_state=emb[:, -1:], noise=noise)
             else:
-                pred = model.predict(emb, act_emb)[:, -1:]
+                pred = model.predict(emb_trunc, act_trunc)[:, -1:]
             emb = torch.cat([emb, pred], dim=1)
             act_emb = torch.cat([act_emb, torch.randn_like(act_emb[:, -1:])], dim=1)
             torch.cuda.synchronize()
@@ -118,7 +122,29 @@ def benchmark():
     for exp in experiments:
         print(f"\n--- Training {exp['name']} ---")
         result, elapsed = run_training(exp["config_name"], common + exp["overrides"], exp["name"])
-        results[exp["name"]] = {"training_time_s": elapsed, "returncode": result.returncode}
+        training_info = {"training_time_s": elapsed, "returncode": result.returncode}
+
+        try:
+            model = swm.wm.utils.load_pretrained(exp["name"])
+            model = model.to("cuda").eval()
+            model.requires_grad_(False)
+            if hasattr(model, "interpolate_pos_encoding"):
+                model.interpolate_pos_encoding = True
+
+            vram_before = torch.cuda.memory_allocated(0)
+            inference = benchmark_inference(model, timed_iters=50)
+            vram_after = torch.cuda.memory_allocated(0)
+            inference["peak_vram_gb"] = vram_after / 1024**3
+            training_info["inference"] = inference
+        except Exception as e:
+            print(f"Inference benchmark for {exp['name']} failed: {e}")
+            training_info["inference"] = None
+
+        peak_vram = torch.cuda.max_memory_allocated(0) / 1024**3
+        print(f"Peak VRAM during {exp['name']}: {peak_vram:.3f} GB")
+        training_info["peak_vram_gb"] = peak_vram
+
+        results[exp["name"]] = training_info
 
     results_file = Path("rtx3050ti_results.json")
     with open(results_file, "w") as f:

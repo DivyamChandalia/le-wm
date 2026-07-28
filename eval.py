@@ -91,10 +91,11 @@ def run(cfg: DictConfig):
         model.requires_grad_(False)
         model.interpolate_pos_encoding = True
         if hasattr(model, "configure_sampling"):
+            sampling_cfg = cfg.get("sampling", {})
             model.configure_sampling(
-                nfe=cfg.sampling.nfe,
-                num_model_samples=cfg.sampling.num_model_samples,
-                seed=cfg.sampling.seed,
+                nfe=sampling_cfg.get("nfe", 1),
+                num_model_samples=sampling_cfg.get("num_model_samples", 1),
+                seed=sampling_cfg.get("seed", cfg.seed),
             )
         config = swm.PlanConfig(**cfg.plan_config)
         solver = hydra.utils.instantiate(cfg.solver, model=model)

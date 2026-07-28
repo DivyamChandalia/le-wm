@@ -3,25 +3,32 @@ from pathlib import Path
 
 import hydra
 import numpy as np
+import stable_pretraining as spt
 import torch
 from einops import rearrange
 from omegaconf import DictConfig, OmegaConf
 
 import stable_worldmodel as swm
+from utils import get_column_normalizer, get_img_preprocessor
 
 
-def limit_dataset(dataset, count, seed):
-    count = min(count, len(dataset))
-    g = torch.Generator().manual_seed(seed)
-    indices = torch.randperm(len(dataset), generator=g)[:count].tolist()
-    return torch.utils.data.Subset(dataset, indices)
+def collate_sequences(dataset, indices, history_size, device):
+    B = len(indices)
+    n_steps = history_size + 5 + 1
+    pixels_list, action_list = [], []
+    for idx in indices:
+        row = dataset[idx]
+        pixels_list.append(torch.from_numpy(row["pixels"][:n_steps]).float())
+        action_list.append(torch.from_numpy(row["action"][:n_steps]).float())
+    pixels = torch.stack(pixels_list).to(device)
+    action = torch.stack(action_list).to(device)
+    return pixels, action
 
 
-def evaluate_latent_dynamics(model, dataset, horizons, noise_seed=12345, num_samples=64, device="cuda"):
+def evaluate_latent_dynamics(model, dataset, horizons, noise_seed=12345, num_samples=64, device="cuda", history_size=3):
     model = model.to(device).eval()
     model.requires_grad_(False)
 
-    indices = limit_dataset(dataset, num_samples, 0)
     all_metrics = {}
     for h in horizons:
         all_metrics[h] = {"mse": [], "cos_sim": []}
@@ -29,24 +36,24 @@ def evaluate_latent_dynamics(model, dataset, horizons, noise_seed=12345, num_sam
     generator = torch.Generator(device=device)
     generator.manual_seed(noise_seed)
 
-    for idx in range(len(indices)):
-        row = indices[idx]
-        pixels = torch.from_numpy(row["pixels"]).float().to(device)
-        action = torch.from_numpy(row["action"]).float().to(device)
-        T = pixels.size(0)
-        info = {"pixels": pixels.unsqueeze(0), "action": action.unsqueeze(0)}
+    rnd = np.random.RandomState(0)
+    total = len(dataset)
+    batch_size = min(32, num_samples)
+    for start in range(0, num_samples, batch_size):
+        batch_indices = rnd.randint(0, total, batch_size).tolist()
+        pixels, action = collate_sequences(dataset, batch_indices, history_size, device)
+        B = pixels.size(0)
+        info = {"pixels": pixels, "action": action}
         info = model.encode(info)
         emb = info["emb"]
         act_emb = info["act_emb"]
 
         for h in horizons:
-            if T <= h + 1:
-                continue
-            ctx_emb = emb[:, :3]
-            ctx_act = act_emb[:, :3]
+            ctx_emb = emb[:, :history_size]
+            ctx_act = act_emb[:, :history_size]
             pred_embs = []
             for t in range(h):
-                noise = torch.randn(1, 1, emb.size(-1), generator=generator, device=device)
+                noise = torch.randn(B, 1, emb.size(-1), generator=generator, device=device)
                 if hasattr(model, "sample_next_from_context"):
                     context = model.predict_context(ctx_emb, ctx_act)[:, -1:]
                     pred = model.sample_next_from_context(
@@ -58,11 +65,11 @@ def evaluate_latent_dynamics(model, dataset, horizons, noise_seed=12345, num_sam
                     pred = model.predict(ctx_emb, ctx_act)[:, -1:]
                 pred_embs.append(pred)
                 ctx_emb = torch.cat([ctx_emb, pred], dim=1)
-                next_act = act_emb[:, 3 + t:4 + t] if 3 + t < act_emb.size(1) else act_emb[:, -1:]
+                next_act = act_emb[:, history_size + t:history_size + t + 1]
                 ctx_act = torch.cat([ctx_act, next_act], dim=1)
 
             pred_embs = torch.cat(pred_embs, dim=1)
-            true_embs = emb[:, 3:3 + h]
+            true_embs = emb[:, history_size:history_size + h]
             if true_embs.size(1) == 0:
                 continue
             mse = (pred_embs - true_embs).pow(2).mean().item()
@@ -85,11 +92,10 @@ def evaluate_latent_dynamics(model, dataset, horizons, noise_seed=12345, num_sam
     return results
 
 
-def evaluate_conditioning_shuffle(model, dataset, horizons=[1, 3, 5], noise_seed=12345, num_samples=32, device="cuda"):
+def evaluate_conditioning_shuffle(model, dataset, horizons=[1], noise_seed=12345, num_samples=32, device="cuda", history_size=3):
     model = model.to(device).eval()
     model.requires_grad_(False)
 
-    indices = limit_dataset(dataset, num_samples, 0)
     normal_losses = {h: [] for h in horizons}
     shuffle_action_losses = {h: [] for h in horizons}
     shuffle_context_losses = {h: [] for h in horizons}
@@ -97,49 +103,54 @@ def evaluate_conditioning_shuffle(model, dataset, horizons=[1, 3, 5], noise_seed
     generator = torch.Generator(device=device)
     generator.manual_seed(noise_seed)
 
-    for idx in range(len(indices)):
-        row = indices[idx]
-        pixels = torch.from_numpy(row["pixels"]).float().to(device)
-        action = torch.from_numpy(row["action"]).float().to(device)
-        T = pixels.size(0)
-        info = {"pixels": pixels.unsqueeze(0), "action": action.unsqueeze(0)}
+    rnd = np.random.RandomState(0)
+    total = len(dataset)
+    batch_size = min(32, num_samples)
+    for start in range(0, num_samples, batch_size):
+        batch_indices = rnd.randint(0, total, batch_size).tolist()
+        pixels, action = collate_sequences(dataset, batch_indices, history_size, device)
+        B = pixels.size(0)
+        info = {"pixels": pixels, "action": action}
         info = model.encode(info)
         emb = info["emb"]
         act_emb = info["act_emb"]
 
         for h in horizons:
-            if T <= h + 1:
-                continue
-            ctx_emb = emb[:, :3]
-            ctx_act = act_emb[:, :3]
-            true_embs = emb[:, 3:3 + h]
-            if true_embs.size(1) == 0:
-                continue
+            ctx_emb = emb[:, :history_size]
+            ctx_act = act_emb[:, :history_size]
+            true_embs = emb[:, history_size:history_size + h]
+
+            noise = torch.randn(B, 1, emb.size(-1), generator=generator, device=device)
 
             if hasattr(model, "sample_next_from_context"):
                 context = model.predict_context(ctx_emb, ctx_act)[:, -1:]
-                noise = torch.randn(1, 1, emb.size(-1), generator=generator, device=device)
-                pred = model.sample_next_from_context(context=context, base_state=ctx_emb[:, -1:], noise=noise)
+                pred = model.sample_next_from_context(
+                    context=context, base_state=ctx_emb[:, -1:], noise=noise
+                )
             else:
                 pred = model.predict(ctx_emb, ctx_act)[:, -1:]
             normal_loss = (pred - true_embs[:, :1]).pow(2).mean().item()
             normal_losses[h].append(normal_loss)
 
-            act_shuffled = act_emb[:, torch.randperm(act_emb.size(1))]
-            ctx_act_shuf = act_shuffled[:, :3]
+            perm = torch.randperm(B, device=device)
+            ctx_act_shuf = ctx_act[perm]
             if hasattr(model, "sample_next_from_context"):
                 context_shuf = model.predict_context(ctx_emb, ctx_act_shuf)[:, -1:]
-                pred = model.sample_next_from_context(context=context_shuf, base_state=ctx_emb[:, -1:], noise=noise)
+                pred = model.sample_next_from_context(
+                    context=context_shuf, base_state=ctx_emb[:, -1:], noise=noise
+                )
             else:
                 pred = model.predict(ctx_emb, ctx_act_shuf)[:, -1:]
             shuffle_action_loss = (pred - true_embs[:, :1]).pow(2).mean().item()
             shuffle_action_losses[h].append(shuffle_action_loss)
 
-            emb_shuffled = emb[:, torch.randperm(emb.size(1))]
-            ctx_emb_shuf = emb_shuffled[:, :3]
+            perm = torch.randperm(B, device=device)
+            ctx_emb_shuf = ctx_emb[perm]
             if hasattr(model, "sample_next_from_context"):
                 context_shuf = model.predict_context(ctx_emb_shuf, ctx_act)[:, -1:]
-                pred = model.sample_next_from_context(context=context_shuf, base_state=emb_shuffled[:, -1:], noise=noise)
+                pred = model.sample_next_from_context(
+                    context=context_shuf, base_state=ctx_emb_shuf[:, -1:], noise=noise
+                )
             else:
                 pred = model.predict(ctx_emb_shuf, ctx_act)[:, -1:]
             shuffle_context_loss = (pred - true_embs[:, :1]).pow(2).mean().item()
@@ -167,6 +178,16 @@ def run(cfg: DictConfig):
         cfg.eval.dataset_name,
         keys_to_cache=cfg.dataset.keys_to_cache,
     )
+
+    transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.eval.img_size)]
+    for col in cfg.dataset.keys_to_cache:
+        if col.startswith("pixels"):
+            continue
+        normalizer = get_column_normalizer(dataset, col, col)
+        transforms.append(normalizer)
+    transform = spt.data.transforms.Compose(*transforms)
+    dataset.transform = transform
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = swm.policy.AutoCostModel(cfg.policy)
     model = model.to(device).eval()
@@ -180,7 +201,7 @@ def run(cfg: DictConfig):
             seed=sampling_cfg.get("seed", 0),
         )
 
-    horizons = [1, 3, 5]
+    horizons = [1]
     print("Evaluating latent dynamics...")
     dynamics_results = evaluate_latent_dynamics(
         model, dataset, horizons=horizons, noise_seed=12345, num_samples=64, device=device,

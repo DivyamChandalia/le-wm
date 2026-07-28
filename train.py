@@ -91,6 +91,7 @@ def shortcut_forward(self, batch, stage, cfg):
         flow_target = target - ctx_emb
     else:
         raise ValueError(cfg.objective.target_space)
+    detach_enc = cfg.objective.get("bootstrap_detach_encoder", True)
     use_alternate = cfg.objective.alternate_batches
     bootstrap_started = self.global_step >= cfg.objective.bootstrap_start_steps
     if use_alternate and bootstrap_started:
@@ -98,30 +99,27 @@ def shortcut_forward(self, batch, stage, cfg):
     else:
         use_shortcut = False
     if use_shortcut:
-        sample = sample_finest_flow_batch(flow_target, cfg.objective.k_max)
-        pred_target = self.model.flow_predict(
-            sample["x_t"], context, sample["signal_idx"], sample["step_idx"]
-        )
-        flow_loss = flow_xpred_loss(pred_target, flow_target, sample["weight"])
-        output["flow_loss"] = flow_loss.detach()
         skw = sample_shortcut_grid(flow_target.shape[:2], cfg.objective.k_max, flow_target.device)
-        shortcut_tgt = flow_target
-        shortcut_ctx = ctx_emb.detach()
+        shortcut_ctx = ctx_emb.detach() if detach_enc else ctx_emb
         shortcut_act = ctx_act
         shortcut_flow = flow_target.detach()
         shortcut_context = self.model.predict_context(shortcut_ctx, shortcut_act)
         noise = torch.randn_like(shortcut_flow)
-        tau = skw["tau"][..., None]
-        x_t = (1.0 - tau) * noise + tau * shortcut_flow
+        x_t = (1.0 - skw["tau"][..., None]) * noise + skw["tau"][..., None] * shortcut_flow
         shortcut_loss = shortcut_bootstrap_loss(
             self.model.flow_head, x_t, shortcut_context,
             skw["signal_idx"], skw["step_idx"],
             skw["tau"], skw["d"], cfg.objective.k_max,
         )
         output["shortcut_loss"] = shortcut_loss.detach()
-        dynamics_loss = 0.5 * flow_loss + 0.5 * shortcut_loss
-        output["shortcut_ratio"] = torch.tensor(0.5, device=flow_loss.device)
+        dynamics_loss = shortcut_loss
+        output["shortcut_ratio"] = torch.tensor(1.0, device=shortcut_loss.device)
     elif cfg.objective.self_fraction > 0.0 and bootstrap_started and not use_alternate:
+        if B < 2:
+            raise ValueError(
+                "Split-batch shortcut training requires batch_size >= 2. "
+                "Use objective.alternate_batches=true for batch_size=1."
+            )
         B_self = max(1, int(B * cfg.objective.self_fraction))
         B_emp = B - B_self
         sample = sample_finest_flow_batch(flow_target[:B_emp], cfg.objective.k_max)
@@ -130,7 +128,7 @@ def shortcut_forward(self, batch, stage, cfg):
         )
         flow_loss = flow_xpred_loss(pred_target, flow_target[:B_emp], sample["weight"])
         output["flow_loss"] = flow_loss.detach()
-        shortcut_ctx = ctx_emb[B_emp:].detach()
+        shortcut_ctx = ctx_emb[B_emp:].detach() if detach_enc else ctx_emb[B_emp:]
         shortcut_act = ctx_act[B_emp:]
         shortcut_flow = flow_target[B_emp:].detach()
         shortcut_context = self.model.predict_context(shortcut_ctx, shortcut_act)

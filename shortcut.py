@@ -36,9 +36,8 @@ def flow_xpred_loss(pred, true, weight):
 def sample_shortcut_grid(batch_shape, k_max, device):
     B, T = batch_shape
     K = k_max
-    nfe_choices = [k for k in [1, 2, 4] if k < K]
-    if not nfe_choices:
-        nfe_choices = [1]
+    max_exp = int(math.log2(K))
+    nfe_choices = [2**e for e in range(max_exp)]
     nfe_choices_tensor = torch.tensor(nfe_choices, device=device)
     nfe_indices = torch.randint(0, len(nfe_choices), (B, T), device=device)
     nfe = nfe_choices_tensor[nfe_indices]
