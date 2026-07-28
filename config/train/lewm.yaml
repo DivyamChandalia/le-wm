@@ -3,6 +3,7 @@ defaults:
   - launcher: local
   - data: pusht
   - model: lewm
+  - objective: mse
 
 output_model_name: lewm
 subdir: ${hydra:job.id}

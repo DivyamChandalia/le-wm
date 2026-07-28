@@ -1,5 +1,7 @@
 """JEPA Implementation"""
 
+import math
+
 import torch
 import torch.nn.functional as F
 from einops import rearrange
@@ -126,10 +128,7 @@ class JEPA(nn.Module):
         return cost
 
     def get_cost(self, info_dict: dict, action_candidates: torch.Tensor):
-        """ Compute the cost of action candidates given an info dict with goal and initial state."""
-
         assert "goal" in info_dict, "goal not in info_dict"
-
         device = next(self.parameters()).device
         for k in list(info_dict.keys()):
             if torch.is_tensor(info_dict[k]):
@@ -137,17 +136,159 @@ class JEPA(nn.Module):
 
         goal = {k: v[:, 0] for k, v in info_dict.items() if torch.is_tensor(v)}
         goal["pixels"] = goal["goal"]
-
         for k in info_dict:
             if k.startswith("goal_"):
                 goal[k[len("goal_") :]] = goal.pop(k)
-
-        goal.pop("action")
+        if "action" in goal:
+            goal.pop("action")
         goal = self.encode(goal)
 
-        info_dict["goal_emb"] = goal["emb"]
+        goal_emb = goal["emb"]
+        goal_emb = goal_emb.unsqueeze(1).expand(
+            -1, action_candidates.shape[1], *([-1] * (goal_emb.ndim - 1))
+        )
+        info_dict["goal_emb"] = goal_emb
         info_dict = self.rollout(info_dict, action_candidates)
-
         cost = self.criterion(info_dict)
-        
+        return cost
+
+
+class ShortcutJEPA(JEPA):
+    def __init__(
+        self, encoder, predictor, action_encoder, flow_head,
+        projector=None, pred_proj=None, k_max=8, target_space="latent",
+    ):
+        super().__init__(encoder, predictor, action_encoder, projector, pred_proj)
+        self.flow_head = flow_head
+        self.k_max = k_max
+        self.target_space = target_space
+        self.sampling_nfe = 1
+        self.num_model_samples = 1
+        self.planning_seed = 0
+
+    def predict_context(self, emb, act_emb):
+        context = self.predictor(emb, act_emb)
+        context = self.pred_proj(rearrange(context, "b t d -> (b t) d"))
+        return rearrange(context, "(b t) d -> b t d", b=emb.size(0))
+
+    def flow_predict(self, noisy, context, signal_idx, step_idx):
+        return self.flow_head(noisy, context, signal_idx, step_idx)
+
+    def configure_sampling(self, nfe=None, num_model_samples=None, seed=None):
+        if nfe is not None:
+            self.sampling_nfe = nfe
+        if num_model_samples is not None:
+            self.num_model_samples = num_model_samples
+        if seed is not None:
+            self.planning_seed = seed
+
+    def sample_next_from_context(self, context, base_state=None, noise=None, nfe=None):
+        nfe = nfe or self.sampling_nfe
+        assert nfe <= self.k_max and (nfe & (nfe - 1)) == 0
+        x = torch.randn_like(context) if noise is None else noise
+        d = 1.0 / nfe
+        step_value = int(math.log2(nfe))
+        for i in range(nfe):
+            tau = i / nfe
+            signal_value = i * (self.k_max // nfe)
+            signal_idx = torch.full(
+                context.shape[:2], signal_value, device=context.device, dtype=torch.long
+            )
+            step_idx = torch.full(
+                context.shape[:2], step_value, device=context.device, dtype=torch.long
+            )
+            pred_target = self.flow_predict(x, context, signal_idx, step_idx)
+            velocity = (pred_target - x) / max(1e-4, 1.0 - tau)
+            x = x + d * velocity
+        if self.target_space == "latent":
+            return x
+        if self.target_space == "delta":
+            assert base_state is not None
+            return base_state + x
+        raise ValueError(self.target_space)
+
+    def rollout(self, info, action_sequence, history_size: int = 3, rollout_noise=None):
+        assert "pixels" in info, "pixels not in info_dict"
+        H = info["pixels"].size(2)
+        B, S, T = action_sequence.shape[:3]
+        act_0, act_future = torch.split(action_sequence, [H, T - H], dim=2)
+        info["action"] = act_0
+        n_steps = T - H
+
+        _init = {k: v[:, 0] for k, v in info.items() if torch.is_tensor(v)}
+        _init = self.encode(_init)
+        emb = info["emb"] = _init["emb"].unsqueeze(1).expand(B, S, -1, -1)
+        _init = {k: detach_clone(v) for k, v in _init.items()}
+
+        emb = rearrange(emb, "b s ... -> (b s) ...").clone()
+        act = rearrange(act_0, "b s ... -> (b s) ...")
+        act_future = rearrange(act_future, "b s ... -> (b s) ...")
+
+        HS = history_size
+        for t in range(n_steps):
+            act_emb = self.action_encoder(act)
+            emb_trunc = emb[:, -HS:]
+            act_trunc = act_emb[:, -HS:]
+            context = self.predict_context(emb_trunc, act_trunc)[:, -1:]
+            noise_slice = (
+                rollout_noise[:, t:t+1] if rollout_noise is not None else None
+            )
+            pred_emb = self.sample_next_from_context(
+                context=context,
+                base_state=emb[:, -1:],
+                noise=noise_slice,
+            )
+            emb = torch.cat([emb, pred_emb], dim=1)
+            next_act = act_future[:, t : t + 1, :]
+            act = torch.cat([act, next_act], dim=1)
+
+        act_emb = self.action_encoder(act)
+        emb_trunc = emb[:, -HS:]
+        act_trunc = act_emb[:, -HS:]
+        pred_emb = emb[:, -1:]  # already predicted; extra prediction not needed for flow
+        emb = torch.cat([emb, pred_emb], dim=1)
+
+        pred_rollout = rearrange(emb, "(b s) ... -> b s ...", b=B, s=S)
+        info["predicted_emb"] = pred_rollout
+        return info
+
+    def get_cost(self, info_dict, action_candidates):
+        assert "goal" in info_dict, "goal not in info_dict"
+        device = next(self.parameters()).device
+        for k in list(info_dict.keys()):
+            if torch.is_tensor(info_dict[k]):
+                info_dict[k] = info_dict[k].to(device)
+
+        B, S, T = action_candidates.shape[:3]
+
+        goal = {}
+        for k, v in info_dict.items():
+            if torch.is_tensor(v):
+                if k == "goal" and v.dim() < 5:
+                    goal[k] = v
+                else:
+                    goal[k] = v[:, 0]
+        goal["pixels"] = goal["goal"]
+        for k in info_dict:
+            if k.startswith("goal_"):
+                goal[k[len("goal_"):]] = goal.pop(k)
+        if "action" in goal:
+            goal.pop("action")
+        goal = self.encode(goal)
+        info_dict["goal_emb"] = goal["emb"].unsqueeze(1).expand(B, S, -1, -1)
+
+        latent_dim = goal["emb"].size(-1)
+        n_steps = T - info_dict["pixels"].size(2)
+
+        generator = torch.Generator(device=device)
+        generator.manual_seed(self.planning_seed)
+        noise = torch.randn(
+            B, 1, n_steps, latent_dim,
+            generator=generator, device=device, dtype=goal["emb"].dtype,
+        )
+        noise = noise.expand(B, S, n_steps, latent_dim)
+        noise = rearrange(noise, "b s t d -> (b s) t d")
+
+        info_dict = self.rollout(info_dict, action_candidates, rollout_noise=noise)
+        cost = self.criterion(info_dict)
         return cost

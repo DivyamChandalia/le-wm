@@ -1,3 +1,5 @@
+import math
+
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -283,3 +285,29 @@ class ARPredictor(nn.Module):
         x = self.dropout(x)
         x = self.transformer(x, c)
         return x
+
+
+class ShortcutFlowHead(nn.Module):
+    def __init__(self, dim: int, hidden_dim: int = 2048, k_max: int = 8):
+        super().__init__()
+        assert k_max > 0 and (k_max & (k_max - 1)) == 0
+        self.dim = dim
+        self.k_max = k_max
+        self.max_step_idx = int(math.log2(k_max))
+        self.noisy_proj = nn.Linear(dim, dim)
+        self.context_proj = nn.Linear(dim, dim)
+        self.signal_embed = nn.Embedding(k_max + 1, dim)
+        self.step_embed = nn.Embedding(self.max_step_idx + 1, dim)
+        self.net = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, dim),
+        )
+
+    def forward(self, noisy_target, context, signal_idx, step_idx):
+        x = self.noisy_proj(noisy_target)
+        x = x + self.context_proj(context)
+        x = x + self.signal_embed(signal_idx)
+        x = x + self.step_embed(step_idx)
+        return self.net(x)

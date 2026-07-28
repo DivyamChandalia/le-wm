@@ -90,6 +90,12 @@ def run(cfg: DictConfig):
         model = model.eval()
         model.requires_grad_(False)
         model.interpolate_pos_encoding = True
+        if hasattr(model, "configure_sampling"):
+            model.configure_sampling(
+                nfe=cfg.sampling.nfe,
+                num_model_samples=cfg.sampling.num_model_samples,
+                seed=cfg.sampling.seed,
+            )
         config = swm.PlanConfig(**cfg.plan_config)
         solver = hydra.utils.instantiate(cfg.solver, model=model)
         policy = swm.policy.WorldModelPolicy(

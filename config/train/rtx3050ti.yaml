@@ -1,0 +1,35 @@
+defaults:
+  - lewm
+  - _self_
+
+seed: 3072
+img_size: 112
+embed_dim: 192
+history_size: 3
+num_preds: 1
+
+wandb:
+  enabled: false
+
+trainer:
+  devices: 1
+  accelerator: gpu
+  precision: 16-mixed
+  gradient_clip_val: 1.0
+  max_steps: 100
+  max_epochs: -1
+  accumulate_grad_batches: 8
+  num_sanity_val_steps: 0
+  log_every_n_steps: 1
+
+loader:
+  batch_size: 1
+  num_workers: 0
+  persistent_workers: false
+  pin_memory: false
+  prefetch_factor: null
+
+debug_subset:
+  enabled: true
+  train_examples: 800
+  val_examples: 160

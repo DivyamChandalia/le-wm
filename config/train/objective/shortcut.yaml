@@ -1,0 +1,7 @@
+name: shortcut
+k_max: 8
+target_space: latent
+self_fraction: 0.25
+bootstrap_start_steps: 5000
+bootstrap_detach_encoder: true
+alternate_batches: false

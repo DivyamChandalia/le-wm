@@ -1,0 +1,7 @@
+name: flow
+k_max: 8
+target_space: latent
+self_fraction: 0.0
+bootstrap_start_steps: 0
+bootstrap_detach_encoder: true
+alternate_batches: false
