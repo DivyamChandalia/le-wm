@@ -25,6 +25,13 @@ def run_training(config_name, overrides, output_name):
     return result, elapsed
 
 
+def read_gpu_metrics(output_name):
+    path = Path(swm.data.utils.get_cache_dir(sub_folder='checkpoints')) / output_name / f"{output_name}_gpu_metrics.json"
+    if path.exists():
+        return json.loads(path.read_text())
+    return None
+
+
 def benchmark_inference(model, device="cuda", history=3, latent_dim=192, horizon=5, warmup=20, timed_iters=100):
     model = model.to(device).eval()
     model.requires_grad_(False)
@@ -76,6 +83,14 @@ def benchmark_inference(model, device="cuda", history=3, latent_dim=192, horizon
     }
 
 
+def get_benchmark_jobs(exp_name):
+    if exp_name == "rtx3050ti_flow":
+        return [("nfe4", 4)]
+    if exp_name == "rtx3050ti_shortcut":
+        return [("nfe1", 1), ("nfe2", 2), ("nfe4", 4)]
+    return [("default", None)]
+
+
 def benchmark():
     print("=" * 60)
     print("RTX 3050 Ti Benchmark")
@@ -115,13 +130,18 @@ def benchmark():
     for exp in experiments:
         print(f"\n--- Training {exp['name']} ---")
 
-        torch.cuda.reset_peak_memory_stats()
         result, elapsed = run_training(exp["config_name"], common + exp["overrides"], exp["name"])
         training_info = {
             "training_time_s": elapsed,
             "returncode": result.returncode,
         }
 
+        gpu_metrics = read_gpu_metrics(exp["name"])
+        if gpu_metrics:
+            training_info["training_peak_allocated_gb"] = gpu_metrics["peak_allocated_gb"]
+            training_info["training_peak_reserved_gb"] = gpu_metrics["peak_reserved_gb"]
+
+        model = None
         try:
             model = swm.wm.utils.load_pretrained(exp["name"])
             model = model.to("cuda").eval()
@@ -129,7 +149,7 @@ def benchmark():
             if hasattr(model, "interpolate_pos_encoding"):
                 model.interpolate_pos_encoding = True
 
-            benchmark_jobs = [("nfe1", 1), ("nfe2", 2), ("nfe4", 4)]
+            benchmark_jobs = get_benchmark_jobs(exp["name"])
             inference_results = {}
 
             if not hasattr(model, "configure_sampling"):
@@ -152,8 +172,10 @@ def benchmark():
             print(f"Inference benchmark for {exp['name']} failed: {e}")
             training_info["inference"] = None
 
-        del model
-        torch.cuda.empty_cache()
+        finally:
+            if model is not None:
+                del model
+            torch.cuda.empty_cache()
 
         results[exp["name"]] = training_info
 

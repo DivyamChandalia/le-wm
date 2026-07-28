@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import numpy as np
 import torch
 from stable_pretraining import data as dt
@@ -30,6 +33,25 @@ def get_column_normalizer(dataset, source: str, target: str):
     mean = data.mean(0, keepdim=True).clone()
     std = data.std(0, keepdim=True).clone()
     return dt.transforms.WrapTorchTransform(ZScoreNormalizer(mean, std), source=source, target=target)
+
+class GPUMetricsCallback(Callback):
+    def __init__(self, output_path):
+        super().__init__()
+        self.output_path = Path(output_path)
+
+    def on_fit_start(self, trainer, pl_module):
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
+    def on_fit_end(self, trainer, pl_module):
+        if not torch.cuda.is_available():
+            return
+        metrics = {
+            "peak_allocated_gb": torch.cuda.max_memory_allocated() / 1024**3,
+            "peak_reserved_gb": torch.cuda.max_memory_reserved() / 1024**3,
+        }
+        self.output_path.write_text(json.dumps(metrics, indent=2))
+
 
 class SaveCkptCallback(Callback):
     """Callback to save model checkpoint after each epoch using save_pretrained."""

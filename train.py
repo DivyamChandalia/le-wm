@@ -17,7 +17,7 @@ from shortcut import (
     sample_shortcut_grid,
     shortcut_bootstrap_loss,
 )
-from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
+from utils import get_column_normalizer, get_img_preprocessor, GPUMetricsCallback, SaveCkptCallback
 
 
 def limit_dataset(dataset, count, seed):
@@ -251,10 +251,12 @@ def run(cfg):
     object_dump_callback = SaveCkptCallback(
         run_name=cfg.output_model_name, cfg=cfg.model, epoch_interval=1,
     )
+    gpu_metrics_path = run_dir / f"{cfg.output_model_name}_gpu_metrics.json"
+    gpu_metrics_callback = GPUMetricsCallback(output_path=gpu_metrics_path)
 
     trainer = pl.Trainer(
         **cfg.trainer,
-        callbacks=[object_dump_callback],
+        callbacks=[object_dump_callback, gpu_metrics_callback],
         logger=logger,
         enable_checkpointing=True,
     )

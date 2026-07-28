@@ -85,7 +85,7 @@ def evaluate_latent_dynamics(model, dataset, horizons, noise_seed=12345, num_sam
     return results
 
 
-def evaluate_conditioning_shuffle(model, dataset, horizons=[1, 3, 5], noise_seed=12345, num_samples=32, device="cuda", history_size=3):
+def evaluate_conditioning_shuffle(model, dataset, horizons=[1], noise_seed=12345, num_samples=32, device="cuda", history_size=3):
     model = model.to(device).eval()
     model.requires_grad_(False)
 
@@ -180,7 +180,7 @@ def run(cfg: DictConfig):
     )
 
     transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.eval.get("img_size", 224))]
-    for col in cfg.dataset.keys_to_cache:
+    for col in dataset.column_names:
         if col.startswith("pixels"):
             continue
         normalizer = get_column_normalizer(dataset, col, col)
