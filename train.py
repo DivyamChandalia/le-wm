@@ -191,9 +191,16 @@ def run(cfg):
     if not dataset_path.exists():
         dataset_path = Path(cache_dir) / f"{dataset_name}.h5"
     if not dataset_path.exists():
+        dataset_path = Path(cache_dir) / f"{dataset_name}.lance"
+    if not dataset_path.exists():
         dataset_path = Path(dataset_name)
     if not dataset_path.is_absolute():
         dataset_path = Path.cwd() / dataset_path
+    if not dataset_path.exists():
+        raise FileNotFoundError(
+            f"Dataset {dataset_name!r} not found. "
+            f"Tried {cache_dir}/ with and without .h5/.lance extensions."
+        )
     dataset = swm.data.load_dataset(
         str(dataset_path), cache_dir=cache_dir, **dataset_cfg
     )
