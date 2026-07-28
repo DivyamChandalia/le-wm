@@ -5,24 +5,17 @@ import hydra
 import numpy as np
 import stable_pretraining as spt
 import torch
-from einops import rearrange
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 import stable_worldmodel as swm
 from utils import get_column_normalizer, get_img_preprocessor
 
 
-def collate_sequences(dataset, indices, history_size, device):
-    B = len(indices)
-    n_steps = history_size + 5 + 1
-    pixels_list, action_list = [], []
-    for idx in indices:
-        row = dataset[idx]
-        pixels_list.append(torch.from_numpy(row["pixels"][:n_steps]).float())
-        action_list.append(torch.from_numpy(row["action"][:n_steps]).float())
-    pixels = torch.stack(pixels_list).to(device)
-    action = torch.stack(action_list).to(device)
-    return pixels, action
+def collate_sequences(dataset, indices, device):
+    rows = [dataset[idx] for idx in indices]
+    pixels = torch.stack([row["pixels"] for row in rows]).to(device)
+    actions = torch.stack([row["action"] for row in rows]).to(device)
+    return pixels, actions
 
 
 def evaluate_latent_dynamics(model, dataset, horizons, noise_seed=12345, num_samples=64, device="cuda", history_size=3):
@@ -41,7 +34,7 @@ def evaluate_latent_dynamics(model, dataset, horizons, noise_seed=12345, num_sam
     batch_size = min(32, num_samples)
     for start in range(0, num_samples, batch_size):
         batch_indices = rnd.randint(0, total, batch_size).tolist()
-        pixels, action = collate_sequences(dataset, batch_indices, history_size, device)
+        pixels, action = collate_sequences(dataset, batch_indices, device)
         B = pixels.size(0)
         info = {"pixels": pixels, "action": action}
         info = model.encode(info)
@@ -92,7 +85,7 @@ def evaluate_latent_dynamics(model, dataset, horizons, noise_seed=12345, num_sam
     return results
 
 
-def evaluate_conditioning_shuffle(model, dataset, horizons=[1], noise_seed=12345, num_samples=32, device="cuda", history_size=3):
+def evaluate_conditioning_shuffle(model, dataset, horizons=[1, 3, 5], noise_seed=12345, num_samples=32, device="cuda", history_size=3):
     model = model.to(device).eval()
     model.requires_grad_(False)
 
@@ -108,7 +101,7 @@ def evaluate_conditioning_shuffle(model, dataset, horizons=[1], noise_seed=12345
     batch_size = min(32, num_samples)
     for start in range(0, num_samples, batch_size):
         batch_indices = rnd.randint(0, total, batch_size).tolist()
-        pixels, action = collate_sequences(dataset, batch_indices, history_size, device)
+        pixels, action = collate_sequences(dataset, batch_indices, device)
         B = pixels.size(0)
         info = {"pixels": pixels, "action": action}
         info = model.encode(info)
@@ -174,12 +167,19 @@ def evaluate_conditioning_shuffle(model, dataset, horizons=[1], noise_seed=12345
 
 @hydra.main(version_base=None, config_path="./config/eval", config_name="pusht")
 def run(cfg: DictConfig):
-    dataset = swm.data.HDF5Dataset(
+    history_size = 3
+    horizons = [1, 3, 5]
+    num_steps = history_size + max(horizons)
+
+    dataset = swm.data.load_dataset(
         cfg.eval.dataset_name,
+        num_steps=num_steps,
+        frameskip=cfg.eval.get("dynamics_frameskip", 5),
+        keys_to_load=["pixels", "action"],
         keys_to_cache=cfg.dataset.keys_to_cache,
     )
 
-    transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.eval.img_size)]
+    transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.eval.get("img_size", 224))]
     for col in cfg.dataset.keys_to_cache:
         if col.startswith("pixels"):
             continue
@@ -201,7 +201,6 @@ def run(cfg: DictConfig):
             seed=sampling_cfg.get("seed", 0),
         )
 
-    horizons = [1]
     print("Evaluating latent dynamics...")
     dynamics_results = evaluate_latent_dynamics(
         model, dataset, horizons=horizons, noise_seed=12345, num_samples=64, device=device,

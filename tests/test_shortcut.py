@@ -94,13 +94,15 @@ def test_shortcut_grid():
 
 
 def test_shortcut_grid_kmax_16_includes_nfe_8():
-    B, T = 4, 5
+    B, T = 128, 10
     for k_max in [4, 8, 16]:
         device = "cpu"
+        torch.manual_seed(42)
         grid = sample_shortcut_grid((B, T), k_max, device)
-        unique_nfe = grid["nfe"].unique().tolist()
-        expected_max = max(1, k_max // 2)
-        assert max(unique_nfe) == expected_max, f"k_max={k_max}: expected max NFE {expected_max}, got {unique_nfe}"
+        unique_nfe = sorted(grid["nfe"].unique().tolist())
+        max_exp = int(math.log2(k_max))
+        expected = [2**e for e in range(max_exp)]
+        assert unique_nfe == expected, f"k_max={k_max}: expected {expected}, got {unique_nfe}"
 
 
 def test_shortcut_bootstrap_loss_finite():

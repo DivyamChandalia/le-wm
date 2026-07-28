@@ -8,13 +8,6 @@ import stable_worldmodel as swm
 import torch
 
 
-def limit_dataset(dataset, count, seed):
-    count = min(count, len(dataset))
-    g = torch.Generator().manual_seed(seed)
-    indices = torch.randperm(len(dataset), generator=g)[:count].tolist()
-    return torch.utils.data.Subset(dataset, indices)
-
-
 def run_training(config_name, overrides, output_name):
     cmd = [
         sys.executable, "train.py",
@@ -121,8 +114,13 @@ def benchmark():
     results = {}
     for exp in experiments:
         print(f"\n--- Training {exp['name']} ---")
+
+        torch.cuda.reset_peak_memory_stats()
         result, elapsed = run_training(exp["config_name"], common + exp["overrides"], exp["name"])
-        training_info = {"training_time_s": elapsed, "returncode": result.returncode}
+        training_info = {
+            "training_time_s": elapsed,
+            "returncode": result.returncode,
+        }
 
         try:
             model = swm.wm.utils.load_pretrained(exp["name"])
@@ -131,18 +129,31 @@ def benchmark():
             if hasattr(model, "interpolate_pos_encoding"):
                 model.interpolate_pos_encoding = True
 
-            vram_before = torch.cuda.memory_allocated(0)
-            inference = benchmark_inference(model, timed_iters=50)
-            vram_after = torch.cuda.memory_allocated(0)
-            inference["peak_vram_gb"] = vram_after / 1024**3
-            training_info["inference"] = inference
+            benchmark_jobs = [("nfe1", 1), ("nfe2", 2), ("nfe4", 4)]
+            inference_results = {}
+
+            if not hasattr(model, "configure_sampling"):
+                benchmark_jobs = [("default", None)]
+
+            for nfe_label, nfe in benchmark_jobs:
+                if nfe is not None:
+                    model.configure_sampling(
+                        nfe=nfe, num_model_samples=1, seed=12345,
+                    )
+
+                torch.cuda.reset_peak_memory_stats()
+                stats = benchmark_inference(model, timed_iters=50)
+                stats["peak_vram_gb"] = torch.cuda.max_memory_allocated() / 1024**3
+                inference_results[nfe_label] = stats
+
+            training_info["inference"] = inference_results
+
         except Exception as e:
             print(f"Inference benchmark for {exp['name']} failed: {e}")
             training_info["inference"] = None
 
-        peak_vram = torch.cuda.max_memory_allocated(0) / 1024**3
-        print(f"Peak VRAM during {exp['name']}: {peak_vram:.3f} GB")
-        training_info["peak_vram_gb"] = peak_vram
+        del model
+        torch.cuda.empty_cache()
 
         results[exp["name"]] = training_info
 

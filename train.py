@@ -92,7 +92,7 @@ def shortcut_forward(self, batch, stage, cfg):
     else:
         raise ValueError(cfg.objective.target_space)
     detach_enc = cfg.objective.get("bootstrap_detach_encoder", True)
-    use_alternate = cfg.objective.alternate_batches
+    use_alternate = cfg.objective.alternate_batches and stage == "train"
     bootstrap_started = self.global_step >= cfg.objective.bootstrap_start_steps
     if use_alternate and bootstrap_started:
         use_shortcut = (self.global_step % 4 == 0)
@@ -114,7 +114,7 @@ def shortcut_forward(self, batch, stage, cfg):
         output["shortcut_loss"] = shortcut_loss.detach()
         dynamics_loss = shortcut_loss
         output["shortcut_ratio"] = torch.tensor(1.0, device=shortcut_loss.device)
-    elif cfg.objective.self_fraction > 0.0 and bootstrap_started and not use_alternate:
+    elif cfg.objective.self_fraction > 0.0 and bootstrap_started and not use_alternate and stage == "train":
         if B < 2:
             raise ValueError(
                 "Split-batch shortcut training requires batch_size >= 2. "
