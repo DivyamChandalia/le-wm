@@ -36,6 +36,7 @@ from shortcut import (
     flow_xpred_loss,
     sample_shortcut_grid,
     shortcut_bootstrap_loss,
+    _make_weight,
 )
 from utils import get_column_normalizer, get_img_preprocessor, GPUMetricsCallback, SaveCkptCallback
 
@@ -75,21 +76,35 @@ def flow_forward(self, batch, stage, cfg):
     ctx_emb = emb[:, :cfg.history_size]
     ctx_act = act_emb[:, :cfg.history_size]
     target = emb[:, 1:cfg.history_size + 1]
-    context = self.model.predict_context(ctx_emb, ctx_act)
-    if cfg.objective.target_space == "latent":
-        flow_target = target
-    elif cfg.objective.target_space == "delta":
+
+    ar_pred = self.model.predict_context(ctx_emb, ctx_act)
+    ar_loss = (ar_pred - target.detach()).pow(2).mean()
+    output["ar_loss"] = ar_loss.detach()
+
+    flow_target_mode = cfg.objective.get("flow_target_mode", "delta")
+    if flow_target_mode == "delta":
         flow_target = target - ctx_emb
+    elif flow_target_mode == "ar_residual":
+        flow_target = target - ar_pred.detach()
     else:
-        raise ValueError(cfg.objective.target_space)
-    sample = sample_finest_flow_batch(flow_target, cfg.objective.k_max)
-    pred_target = self.model.flow_predict(
-        sample["x_t"], context, sample["signal_idx"], sample["step_idx"]
+        raise ValueError(f"Unknown flow_target_mode: {flow_target_mode}")
+
+    weighting = cfg.objective.get("flow_weighting", "original")
+    force_tau0_prob = cfg.objective.get("force_tau0_prob", 0.0)
+    sample = sample_finest_flow_batch(
+        flow_target, cfg.objective.k_max,
+        weighting=weighting, force_tau0_prob=force_tau0_prob,
     )
-    dynamics_loss = flow_xpred_loss(pred_target, flow_target, sample["weight"])
+    pred_target = self.model.flow_predict(
+        sample["x_t"], ar_pred, sample["signal_idx"], sample["step_idx"]
+    )
+    flow_loss = flow_xpred_loss(pred_target, flow_target, sample["weight"])
+    output["flow_loss"] = flow_loss.detach()
+
     lambd = cfg.loss.sigreg.weight
+    ar_aux_weight = cfg.objective.get("ar_aux_weight", 0.0)
     output["sigreg_loss"] = self.sigreg(emb.transpose(0, 1))
-    output["loss"] = dynamics_loss + lambd * output["sigreg_loss"]
+    output["loss"] = flow_loss + ar_aux_weight * ar_loss + lambd * output["sigreg_loss"]
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}
     self.log_dict(losses_dict, on_step=True, sync_dist=True)
     return output

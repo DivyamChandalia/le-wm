@@ -5,3 +5,7 @@ self_fraction: 0.0
 bootstrap_start_steps: 0
 bootstrap_detach_encoder: true
 alternate_batches: false
+ar_aux_weight: 0.0
+flow_weighting: original
+force_tau0_prob: 0.0
+flow_target_mode: delta

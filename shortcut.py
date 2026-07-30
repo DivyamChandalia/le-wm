@@ -10,13 +10,27 @@ def step_idx_from_nfe(nfe):
     return int(math.log2(nfe))
 
 
-def sample_finest_flow_batch(target, k_max):
+def _make_weight(tau, weighting):
+    if weighting == "original":
+        return 0.9 * tau + 0.1
+    elif weighting == "uniform":
+        return torch.ones_like(tau)
+    elif weighting == "early":
+        return (1.0 - tau).clamp_min(0.1)
+    else:
+        raise ValueError(f"Unknown weighting: {weighting}")
+
+
+def sample_finest_flow_batch(target, k_max, weighting="original", force_tau0_prob=0.0):
     noise = torch.randn_like(target)
     signal_idx = torch.randint(0, k_max, target.shape[:2], device=target.device)
+    if force_tau0_prob > 0.0:
+        force_zero = torch.rand_like(signal_idx.float()) < force_tau0_prob
+        signal_idx = torch.where(force_zero, torch.zeros_like(signal_idx), signal_idx)
     tau = signal_idx.float() / float(k_max)
     x_t = (1.0 - tau[..., None]) * noise + tau[..., None] * target
     step_idx = torch.full_like(signal_idx, int(math.log2(k_max)))
-    weight = 0.9 * tau + 0.1
+    weight = _make_weight(tau, weighting)
     return {
         "x_t": x_t,
         "noise": noise,

@@ -1,0 +1,116 @@
+{
+  "report_type": "local_diagnostic",
+  "gpu": "NVIDIA GeForce RTX 3050 Ti Laptop",
+  "driver": "595.71.05",
+  "cuda_version": "13.2",
+  "pytorch_version": "2.6.0",
+  "vram_total_gb": 4.0,
+  "date": "2026-07-28",
+
+  "training": {
+    "common_settings": {
+      "img_size": 112,
+      "latent_dim": 192,
+      "history_size": 3,
+      "physical_batch": 1,
+      "gradient_accumulation": 8,
+      "effective_batch": 8,
+      "optimizer": "AdamW",
+      "learning_rate": "5e-5",
+      "weight_decay": "1e-3",
+      "precision": "16-mixed",
+      "optimizer_updates": 100,
+      "seed": 3072
+    },
+    "models": {
+      "LeWM": {
+        "params": 17997614,
+        "training_time_s": 112,
+        "peak_vram_gb": 0.43,
+        "checkpoint_mb": 69,
+        "status": "completed"
+      },
+      "Flow-LeWM (k_max=4)": {
+        "params": 18862318,
+        "training_time_s": 57,
+        "peak_vram_gb": 0.45,
+        "checkpoint_mb": 73,
+        "status": "completed"
+      },
+      "Shortcut-LeWM (k_max=4)": {
+        "params": 18862318,
+        "training_time_s": 68,
+        "peak_vram_gb": 0.47,
+        "checkpoint_mb": 73,
+        "status": "completed"
+      }
+    }
+  },
+
+  "inference_benchmark": {
+    "settings": {
+      "B": 1,
+      "history": 3,
+      "latent_dim": 192,
+      "warmup_iters": 20,
+      "timed_iters": 100,
+      "device": "cuda"
+    },
+    "results": {
+      "LeWM": {
+        "transition_ms": 3.14,
+        "peak_vram_gb": 0.148
+      },
+      "Shortcut NFE=1": {
+        "transition_ms": 3.51,
+        "peak_vram_gb": 0.148
+      },
+      "Shortcut NFE=2": {
+        "transition_ms": 3.81,
+        "peak_vram_gb": 0.148
+      },
+      "Shortcut NFE=4": {
+        "transition_ms": 4.40,
+        "peak_vram_gb": 0.148
+      },
+      "Flow NFE=4": {
+        "transition_ms": 4.41,
+        "peak_vram_gb": 0.219
+      }
+    }
+  },
+
+  "key_findings": [
+    "Flow-LeWM adds 864K parameters (4.8%) over base LeWM",
+    "Shortcut NFE=1 is only 12% slower than LeWM (3.51 vs 3.14 ms/transition)",
+    "Shortcut NFE=4 and Flow NFE=4 have identical speed (same architecture)",
+    "All models fit comfortably within 4 GB VRAM (peak training: 0.47 GB)",
+    "Three training variants completed 100 optimizer steps without NaNs or CUDA errors",
+    "Deterministic planning via common random numbers is verified"
+  ],
+
+  "tasks_completed": {
+    "stage_0_baseline_lock": true,
+    "stage_1_flow_head": true,
+    "stage_2_flow_math": true,
+    "stage_3_shortcut_jepa": true,
+    "stage_4_flow_rollout": true,
+    "stage_5_deterministic_planning": true,
+    "stage_6_hydra_model_config": true,
+    "stage_7_objective_configs": true,
+    "stage_8_training_config": true,
+    "stage_9_training_dispatch": true,
+    "stage_10_eval_sampling_config": true,
+    "stage_11_eval_integration": true,
+    "stage_12_tests": {"total": 24, "passed": 24},
+    "stage_13_smoke_training": true,
+    "stage_13a_rtx3050ti_benchmark": true,
+    "stage_14_offline_dynamics_eval": true,
+    "stage_15_conditioning_diagnostics": true,
+    "stage_16_pusht_pilot": "requires full dataset (13 GB)",
+    "stage_17_nfe_sweep": "requires trained full checkpoint",
+    "stage_18_decision_tree": "no failures detected yet",
+    "stage_19_full_benchmark": "requires 4-task dataset",
+    "stage_20_report": true
+  }
+}

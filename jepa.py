@@ -208,6 +208,8 @@ class ShortcutJEPA(JEPA):
         if self.target_space == "delta":
             assert base_state is not None
             return base_state + x
+        if self.target_space == "ar_residual":
+            return context + x
         raise ValueError(self.target_space)
 
     def rollout(self, info, action_sequence, history_size: int = 3, rollout_noise=None):
