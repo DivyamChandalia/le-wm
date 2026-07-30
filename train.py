@@ -77,34 +77,43 @@ def flow_forward(self, batch, stage, cfg):
     ctx_act = act_emb[:, :cfg.history_size]
     target = emb[:, 1:cfg.history_size + 1]
 
+    # Baseline LeWM AR loss (unchanged — trains encoder + predictor exactly as before)
     ar_pred = self.model.predict_context(ctx_emb, ctx_act)
-    ar_loss = (ar_pred - target.detach()).pow(2).mean()
+    ar_loss = (ar_pred - target).pow(2).mean()
     output["ar_loss"] = ar_loss.detach()
 
-    flow_target_mode = cfg.objective.get("flow_target_mode", "delta")
-    if flow_target_mode == "delta":
-        flow_target = target - ctx_emb
-    elif flow_target_mode == "ar_residual":
-        flow_target = target - ar_pred.detach()
-    else:
-        raise ValueError(f"Unknown flow_target_mode: {flow_target_mode}")
+    # SIGReg (baseline — pushes encoder toward unit-variance latents)
+    output["sigreg_loss"] = self.sigreg(emb.transpose(0, 1))
 
+    # --- Flow branch (isolated from encoder) ---
+    flow_grad_mode = cfg.objective.get("flow_grad_mode", "isolated")
+    flow_weight = cfg.objective.get("flow_weight", 1.0)
     weighting = cfg.objective.get("flow_weighting", "original")
     force_tau0_prob = cfg.objective.get("force_tau0_prob", 0.0)
+
+    # Flow target is always detached — flow cannot rewrite the representation.
+    flow_target = (target - ar_pred).detach()
+
+    # Flow context determines whether flow can influence the predictor.
+    if flow_grad_mode == "frozen" or flow_grad_mode == "isolated":
+        flow_context = ar_pred.detach()
+    elif flow_grad_mode == "predictor":
+        flow_context = ar_pred
+    else:
+        raise ValueError(f"Unknown flow_grad_mode: {flow_grad_mode}")
+
     sample = sample_finest_flow_batch(
         flow_target, cfg.objective.k_max,
         weighting=weighting, force_tau0_prob=force_tau0_prob,
     )
     pred_target = self.model.flow_predict(
-        sample["x_t"], ar_pred, sample["signal_idx"], sample["step_idx"]
+        sample["x_t"], flow_context, sample["signal_idx"], sample["step_idx"]
     )
     flow_loss = flow_xpred_loss(pred_target, flow_target, sample["weight"])
     output["flow_loss"] = flow_loss.detach()
 
     lambd = cfg.loss.sigreg.weight
-    ar_aux_weight = cfg.objective.get("ar_aux_weight", 0.0)
-    output["sigreg_loss"] = self.sigreg(emb.transpose(0, 1))
-    output["loss"] = flow_loss + ar_aux_weight * ar_loss + lambd * output["sigreg_loss"]
+    output["loss"] = ar_loss + lambd * output["sigreg_loss"] + flow_weight * flow_loss
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}
     self.log_dict(losses_dict, on_step=True, sync_dist=True)
     return output
@@ -256,6 +265,20 @@ def run(cfg):
     ##############################
 
     world_model = hydra.utils.instantiate(cfg.model)
+
+    flow_grad_mode = cfg.get("objective", {}).get("flow_grad_mode", "isolated")
+    if flow_grad_mode == "frozen":
+        pretrained_path = cfg.objective.get("load_pretrained", None)
+        assert pretrained_path is not None, "frozen mode requires load_pretrained path"
+        state = torch.load(pretrained_path, map_location="cpu")
+        if "model" in state:
+            state = state["model"]
+        world_model.load_state_dict(state, strict=False)
+        for name, param in world_model.named_parameters():
+            if not name.startswith("flow_head"):
+                param.requires_grad = False
+        n_trainable = sum(p.numel() for p in world_model.parameters() if p.requires_grad)
+        print(f"[frozen] Trainable params: {n_trainable:,} (only flow_head)")
 
     objective_name = cfg.get("objective", {}).get("name", "mse")
     if objective_name == "mse":

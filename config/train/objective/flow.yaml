@@ -1,11 +1,12 @@
 name: flow
 k_max: 8
-target_space: latent
+target_space: ar_residual
 self_fraction: 0.0
 bootstrap_start_steps: 0
 bootstrap_detach_encoder: true
 alternate_batches: false
-ar_aux_weight: 0.0
+flow_grad_mode: isolated   # isolated | predictor | frozen
+flow_weight: 1.0
+load_pretrained: null      # checkpoint path for frozen mode
 flow_weighting: original
 force_tau0_prob: 0.0
-flow_target_mode: delta
