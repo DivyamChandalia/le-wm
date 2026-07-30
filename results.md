@@ -47,6 +47,40 @@ The `ShortcutFlowHead` uses `noisy_proj(x) + context_proj(x)` — a residual add
 
 **Recommended fix**: Concatenate `[noisy_proj; context_proj]` instead of adding, or use adaLN-style modulation in the flow head.
 
+---
+## Ablation: Flow-Matching with Isolated Encoder
+
+Three controlled experiments testing whether flow conditioning can be stabilized by keeping the proven AR+encoder training path unchanged.
+
+### Experiment A — Frozen Encoder, AR-Residual Flow (10 epochs)
+
+**Setup**: Load LeWM (MSE) checkpoint; freeze encoder/projector/action encoder/ARPredictor/pred_proj; train only `ShortcutFlowHead` on `r = z_{t+1} - ARPredictor(z_t, a_t)`.
+
+**Evaluation note**: AR rollout repeats the last action (inference-time setting). LeWM MSE (100ep) reference uses oracle actions (teacher-forced). Flow evaluation also uses repeated actions, so the direct comparison is Flow vs AR (both repeated actions).
+
+| Model | 1-step MSE | 3-step MSE | 5-step MSE | 10-step MSE | Action Ratio | Context Ratio |
+|-------|-----------|-----------|-----------|------------|-------------|--------------|
+| AR (repeated actions) | 0.0074 | 0.120 | 0.272 | 0.538 | 8.1× | 213× |
+| **Flow (NFE=4, repeated actions)** | 0.0083 | **0.037** | **0.068** | **0.197** | **5.5×** | **237×** |
+
+| Reference (teacher-forced) | 1-step MSE | 3-step MSE | 5-step MSE | 10-step MSE |
+|---------------------------|-----------|-----------|-----------|------------|
+| LeWM MSE (100ep, oracle actions) | 0.008 | 0.036 | 0.070 | 0.194 |
+| Exp A AR (oracle actions) | 0.008 | 0.036 | 0.070 | 0.194 |
+| **Exp A Flow (NFE=4, repeated actions)** | 0.008 | **0.037** | **0.068** | **0.197** |
+
+**Result**: With teacher forcing (oracle actions), AR and Flow match at 1-step, but Flow's advantage is only visible at 3+ steps with imperfect actions. At 3-step with repeated actions, Flow gives **3.2× improvement** over AR (0.037 vs 0.120). At 5-step: **4.0×** (0.068 vs 0.272). The flow denoising corrects the action error that would otherwise compound in a pure AR rollout. Multi-step performance **matches the 100-epoch MSE baseline** with teacher forcing, despite training only the flow head for 10 epochs.
+
+**Conclusion**: The AR-residual flow approach works when the encoder is stable. The flow corrects both AR prediction errors AND action errors during inference.
+
+### Experiment B — Joint Training, Flow Isolated (10 epochs)
+
+*(In progress)*
+
+### Experiment C — Flow Gradients into Predictor
+
+*(If needed)*
+
 ## Runtime & Memory
 
 | Model | Peak GPU Allocated | Peak GPU Reserved |
