@@ -16,6 +16,7 @@
 | LeWM (MSE baseline) | — | **0.008 ± 0.0004** | **0.036 ± 0.011** | **0.070 ± 0.015** | **0.996** | **0.955** |
 | Flow-LeWM | latent | 0.317 ± 0.007 | 0.643 ± 0.003 | 0.816 ± 0.001 | 0.865 | 0.385 |
 | Flow-LeWM | delta | 0.086 ± 0.012 | 0.230 ± 0.039 | 0.369 ± 0.046 | 0.942 | 0.765 |
+| Shortcut-LeWM | latent | 0.371 ± 0.013 | 0.726 ± 0.008 | 0.904 ± 0.008 | 0.801 | 0.324 |
 | Shortcut-LeWM | delta | **0.084 ± 0.027** | **0.202 ± 0.063** | **0.332 ± 0.087** | **0.962** | **0.867** |
 
 ## Conditioning Dependence (1-step Shuffle Ratios)
@@ -27,6 +28,7 @@ Shuffle ratio >1 indicates the model uses that input. Higher = stronger conditio
 | LeWM (MSE baseline) | — | **6.3 ×** ✅ | **225.7 ×** ✅ |
 | Flow-LeWM | latent | 1.07 × ❌ | 3.4 × ⚠️ |
 | Flow-LeWM | delta | 1.00 × ❌ | 19.0 × ✅ |
+| Shortcut-LeWM | latent | 1.05 × ❌ | 3.5 × ⚠️ |
 | Shortcut-LeWM | delta | 1.00 × ❌ | 14.9 × ✅ |
 
 ## Key Findings
