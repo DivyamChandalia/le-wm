@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import hydra
@@ -46,16 +47,18 @@ def evaluate_latent_dynamics(model, dataset, horizons, noise_seed=12345, num_sam
             ctx_act = act_emb[:, :history_size]
             pred_embs = []
             for t in range(h):
+                _ctx_emb = ctx_emb[:, -history_size:]
+                _ctx_act = ctx_act[:, -history_size:]
                 noise = torch.randn(B, 1, emb.size(-1), generator=generator, device=device)
                 if hasattr(model, "sample_next_from_context"):
-                    context = model.predict_context(ctx_emb, ctx_act)[:, -1:]
+                    context = model.predict_context(_ctx_emb, _ctx_act)[:, -1:]
                     pred = model.sample_next_from_context(
                         context=context,
-                        base_state=ctx_emb[:, -1:],
+                        base_state=_ctx_emb[:, -1:],
                         noise=noise,
                     )
                 else:
-                    pred = model.predict(ctx_emb, ctx_act)[:, -1:]
+                    pred = model.predict(_ctx_emb, _ctx_act)[:, -1:]
                 pred_embs.append(pred)
                 ctx_emb = torch.cat([ctx_emb, pred], dim=1)
                 next_act = act_emb[:, history_size + t:history_size + t + 1]
@@ -165,14 +168,28 @@ def evaluate_conditioning_shuffle(model, dataset, horizons=[1], noise_seed=12345
     return results
 
 
+def _resolve_dataset_path(name, cfg):
+    local_dir = os.environ.get("LOCAL_DATASET_DIR")
+    if local_dir:
+        candidates = [Path(local_dir) / name, Path(local_dir) / f"{name}.h5", Path(local_dir) / f"{name}.lance"]
+    else:
+        cache_dir = swm.data.utils.get_cache_dir()
+        candidates = [Path(cache_dir) / name, Path(cache_dir) / f"{name}.h5", Path(cache_dir) / f"{name}.lance"]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return name
+
+
 @hydra.main(version_base=None, config_path="./config/eval", config_name="pusht")
 def run(cfg: DictConfig):
     history_size = 3
     horizons = [1, 3, 5]
     num_steps = history_size + max(horizons)
 
+    dataset_name = _resolve_dataset_path(cfg.eval.dataset_name, cfg)
     dataset = swm.data.load_dataset(
-        cfg.eval.dataset_name,
+        dataset_name,
         num_steps=num_steps,
         frameskip=cfg.eval.get("dynamics_frameskip", 5),
         keys_to_load=["pixels", "action"],

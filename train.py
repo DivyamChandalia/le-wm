@@ -292,7 +292,7 @@ def run(cfg):
         OmegaConf.save(cfg, f)
 
     object_dump_callback = SaveCkptCallback(
-        run_name=cfg.output_model_name, cfg=cfg.model, epoch_interval=1,
+        run_name=cfg.output_model_name, cfg=cfg.model,
     )
     gpu_metrics_callback = GPUMetricsCallback(output_path=gpu_metrics_path)
 
@@ -300,7 +300,6 @@ def run(cfg):
         **cfg.trainer,
         callbacks=[object_dump_callback, gpu_metrics_callback],
         logger=logger,
-        enable_checkpointing=True,
     )
 
     ckpt_path = run_dir / f"{cfg.output_model_name}_weights.ckpt"
