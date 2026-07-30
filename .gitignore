@@ -1,0 +1,5 @@
+
+lightning_logs/
+outputs/
+.stable_worldmodel/
+*.ckpt
